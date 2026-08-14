@@ -153,6 +153,24 @@ async function startServer() {
 
   await loadLocalState();
 
+  const normalizeProductCode = (value: unknown) => String(value ?? '').trim().toUpperCase();
+  const getProductCodes = (product: any) => [
+    product.code,
+    product.barcode,
+    product.altCode,
+    ...(Array.isArray(product.barcodeAliases) ? product.barcodeAliases : [])
+  ].map(normalizeProductCode).filter(Boolean);
+
+  const findProductCodeConflict = (product: any) => {
+    const candidateCodes = new Set(getProductCodes(product));
+    if (candidateCodes.size === 0) return null;
+
+    return products.find(existing => (
+      String(existing.id) !== String(product.id) &&
+      getProductCodes(existing).some((code: string) => candidateCodes.has(code))
+    )) || null;
+  };
+
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", persistence: "local-file", dataFile: "data/tendi.local.json" });
   });
@@ -175,11 +193,11 @@ async function startServer() {
     if (!query) return res.json(products);
 
     // Prioritize exact barcode, then partial name
-    const exactMatch = products.find(p => p.code === query || p.barcode === query);
+    const exactMatch = products.find(p => getProductCodes(p).includes(normalizeProductCode(query)));
     if (exactMatch) return res.json([exactMatch]);
 
     const partialMatches = products.filter(p => 
-      p.name.toUpperCase().includes(query) || p.code.includes(query) || (p.barcode && p.barcode.includes(query))
+      p.name.toUpperCase().includes(query) || getProductCodes(p).some((code: string) => code.includes(query))
     );
     res.json(partialMatches);
   });
@@ -190,11 +208,37 @@ async function startServer() {
     if (!prod || !prod.name) {
       return res.status(400).json({ error: "Datos de producto inválidos" });
     }
-    const idx = products.findIndex(p => String(p.id) === String(prod.id) || p.code === prod.code);
+    const normalizedProduct = {
+      ...prod,
+      code: normalizeProductCode(prod.code || prod.barcode),
+      barcode: normalizeProductCode(prod.barcode),
+      altCode: normalizeProductCode(prod.altCode),
+      barcodeAliases: Array.from(new Set(
+        (Array.isArray(prod.barcodeAliases) ? prod.barcodeAliases : [])
+          .map(normalizeProductCode)
+          .filter(Boolean)
+      ))
+    };
+
+    if (!normalizedProduct.barcode) {
+      return res.status(400).json({ error: "Debe escanear o ingresar el codigo de barras antes de guardar el producto." });
+    }
+
+    const candidateCodes = getProductCodes(normalizedProduct);
+    const conflict = findProductCodeConflict(normalizedProduct);
+    if (conflict) {
+      const conflictCode = candidateCodes.find(code => getProductCodes(conflict).includes(code));
+      return res.status(409).json({
+        error: `El codigo ${conflictCode} ya esta asignado al producto ${conflict.name}.`,
+        conflictProductId: conflict.id
+      });
+    }
+
+    const idx = products.findIndex(p => String(p.id) === String(normalizedProduct.id));
     if (idx >= 0) {
-      products[idx] = { ...products[idx], ...prod };
+      products[idx] = { ...products[idx], ...normalizedProduct };
     } else {
-      products.push(prod);
+      products.push(normalizedProduct);
     }
     await persistLocalState();
     res.json({ success: true, products });
@@ -580,6 +624,28 @@ async function startServer() {
       return res.status(400).json({ error: "El total del comprobante de compra debe ser mayor a $0.00" });
     }
 
+    const productWithoutBarcode = items.find((item: any) => item.createIfMissing && !normalizeProductCode(item.barcode));
+    if (productWithoutBarcode) {
+      return res.status(400).json({ error: "Todo producto nuevo debe ingresar primero por un cÃ³digo de barras escaneado." });
+    }
+
+    const incomingNewProducts = items
+      .filter((item: any) => item.createIfMissing)
+      .map((item: any) => ({
+        id: `incoming-${item.barcode}`,
+        code: normalizeProductCode(item.code || item.barcode),
+        barcode: normalizeProductCode(item.barcode),
+        altCode: normalizeProductCode(item.altCode),
+        barcodeAliases: Array.isArray(item.barcodeAliases) ? item.barcodeAliases : [],
+        name: item.name
+      }));
+    const purchaseConflict = incomingNewProducts
+      .map(findProductCodeConflict)
+      .find(Boolean);
+    if (purchaseConflict) {
+      return res.status(409).json({ error: `Uno de los cÃ³digos ya estÃ¡ asignado al producto ${purchaseConflict.name}.` });
+    }
+
     // Process Stock Entry (Increase Stock) & Update Costs
     items.forEach((item: any) => {
       let p = products.find(prod => prod.id === item.productId || prod.code === item.code);
@@ -592,7 +658,9 @@ async function startServer() {
         // Option to create new product directly from purchase
         const newProd = {
           id: Date.now() + Math.floor(Math.random() * 1000),
-          code: item.code || `PROD-${Date.now().toString().slice(-4)}`,
+          code: normalizeProductCode(item.code || item.barcode),
+          barcode: normalizeProductCode(item.barcode),
+          barcodeAliases: [],
           name: item.name.toUpperCase(),
           price: item.salePrice || (item.costPrice * 1.3) || 1.00,
           costPrice: item.costPrice || 0,

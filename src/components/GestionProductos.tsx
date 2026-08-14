@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { 
   Search, 
   Plus, 
@@ -26,6 +26,7 @@ interface ProductItem {
   code: string;
   barcode: string;
   altCode?: string;
+  barcodeAliases?: string[];
   sriAuxCode?: string;
   name: string;
   shortName?: string;
@@ -78,7 +79,7 @@ interface ProductItem {
 interface GestionProductosProps {
   products: ProductItem[];
   categories: any[];
-  onSaveProduct?: (product: any) => void;
+  onSaveProduct?: (product: any) => void | Promise<void>;
   onDeleteProduct?: (id: number | string) => void;
 }
 
@@ -94,6 +95,7 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
   );
   const [isEditing, setIsEditing] = useState(false);
   const [isNewProduct, setIsNewProduct] = useState(false);
+  const barcodeInputRef = useRef<HTMLInputElement>(null);
   const [activeTab, setActiveTab] = useState<
     'datos' | 'almacenes' | 'imagenes' | 'ecommerce' | 'ficha' | 'parametros' | 'alternos' | 'listado'
   >('datos');
@@ -106,8 +108,9 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
     if (prod) {
       return {
         ...prod,
-        barcode: prod.barcode || prod.code || '7861146401068',
-        altCode: prod.altCode || '7241925330466',
+        barcode: prod.barcode || prod.code || '',
+        altCode: prod.altCode || '',
+        barcodeAliases: Array.isArray(prod.barcodeAliases) ? prod.barcodeAliases : [],
         sriAuxCode: prod.sriAuxCode || '',
         shortName: prod.shortName || prod.name || '',
         line: prod.line || 'General',
@@ -149,9 +152,10 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
     }
     return {
       id: Date.now(),
-      code: '786' + Math.floor(1000000000 + Math.random() * 9000000000),
-      barcode: '724' + Math.floor(1000000000 + Math.random() * 9000000000),
+      code: '',
+      barcode: '',
       altCode: '',
+      barcodeAliases: [],
       sriAuxCode: '',
       name: 'NUEVO PRODUCTO',
       shortName: 'NUEVO PROD',
@@ -196,6 +200,27 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
 
   const currentProduct = products.find(p => String(p.id) === String(selectedProductId));
   const [formData, setFormData] = useState<ProductItem>(initialProductState(currentProduct));
+  const [alternateCodeDraft, setAlternateCodeDraft] = useState('');
+
+  const normalizeCode = (value: unknown) => String(value ?? '').trim().toUpperCase();
+  const productCodes = (product: Partial<ProductItem>) => [
+    product.code,
+    product.barcode,
+    product.altCode,
+    ...(Array.isArray(product.barcodeAliases) ? product.barcodeAliases : [])
+  ].map(normalizeCode).filter(Boolean);
+
+  const currentProductCodes = useMemo(() => productCodes(formData), [formData]);
+  const conflictingCode = useMemo(() => {
+    const currentCodes = new Set(currentProductCodes);
+    if (currentCodes.size === 0) return '';
+    const conflict = products.find(product => (
+      String(product.id) !== String(formData.id) &&
+      productCodes(product).some(code => currentCodes.has(code))
+    ));
+    if (!conflict) return '';
+    return currentProductCodes.find(code => productCodes(conflict).includes(code)) || '';
+  }, [currentProductCodes, formData.id, products]);
 
   // Whenever selected product changes in view mode, sync form
   React.useEffect(() => {
@@ -204,11 +229,21 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
     }
   }, [selectedProductId, products, isEditing, isNewProduct]);
 
+  React.useEffect(() => {
+    if (isNewProduct && isEditing) {
+      setTimeout(() => {
+        barcodeInputRef.current?.focus();
+        barcodeInputRef.current?.select();
+      }, 0);
+    }
+  }, [isNewProduct, isEditing]);
+
   // Handle New Button
   const handleNew = () => {
     setIsNewProduct(true);
     setIsEditing(true);
     setFormData(initialProductState());
+    setAlternateCodeDraft('');
     setActiveTab('datos');
   };
 
@@ -224,26 +259,69 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
   const handleCancel = () => {
     setIsEditing(false);
     setIsNewProduct(false);
+    setAlternateCodeDraft('');
     if (currentProduct) {
       setFormData(initialProductState(currentProduct));
     }
   };
 
   // Handle Save Button
-  const handleSave = (e?: React.FormEvent) => {
+  const handleSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!formData.name.trim()) {
       alert('Por favor ingrese la descripción/nombre del producto.');
       return;
     }
 
-    if (onSaveProduct) {
-      onSaveProduct(formData);
+    if (!normalizeCode(formData.barcode)) {
+      alert('Primero escanee o ingrese el codigo de barras del producto.');
+      setActiveTab('datos');
+      return;
+    }
+
+    if (conflictingCode) {
+      alert(`El codigo ${conflictingCode} ya esta asignado a otro producto.`);
+      return;
+    }
+
+    try {
+      if (onSaveProduct) await onSaveProduct(formData);
+    } catch (error: any) {
+      alert(error?.message || 'No se pudo guardar el producto.');
+      return;
     }
 
     setIsEditing(false);
     setIsNewProduct(false);
     alert(`Producto "${formData.name}" guardado exitosamente.`);
+  };
+
+  const handleAddAlternateCode = () => {
+    const code = normalizeCode(alternateCodeDraft);
+    if (!code) return;
+    if (currentProductCodes.includes(code)) {
+      alert('Ese codigo ya esta registrado en este producto.');
+      return;
+    }
+    const conflict = products.find(product => (
+      String(product.id) !== String(formData.id) && productCodes(product).includes(code)
+    ));
+    if (conflict) {
+      alert(`El codigo ${code} ya esta asignado a ${conflict.name}.`);
+      return;
+    }
+    setFormData(previous => ({
+      ...previous,
+      barcodeAliases: [...(previous.barcodeAliases || []), code]
+    }));
+    setAlternateCodeDraft('');
+  };
+
+  const handleRemoveAlternateCode = (code: string) => {
+    setFormData(previous => ({
+      ...previous,
+      barcodeAliases: (previous.barcodeAliases || []).filter(item => item !== code)
+    }));
   };
 
   // Handle Delete Button
@@ -536,10 +614,23 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
                     <input
                       type="text"
                       disabled={!isEditing}
+                      ref={barcodeInputRef}
                       value={formData.barcode}
-                      onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                      autoFocus={isNewProduct && isEditing}
+                      placeholder={isNewProduct ? 'Escanee el codigo de barras primero' : ''}
+                      onChange={(e) => {
+                        const barcode = e.target.value.trim().toUpperCase();
+                        setFormData(previous => ({
+                          ...previous,
+                          barcode,
+                          code: isNewProduct && !previous.code ? barcode : previous.code
+                        }));
+                      }}
                       className="w-full bg-[#0a0a0d] border border-zinc-800 rounded-xl px-3 py-1.5 text-[#00ff41] font-mono font-bold text-xs focus:border-[#00ff41] outline-none disabled:opacity-75"
                     />
+                    {conflictingCode && (
+                      <p className="mt-1 text-[10px] font-bold text-red-400">Codigo repetido: {conflictingCode}</p>
+                    )}
                   </div>
 
                   <div>
@@ -1243,8 +1334,30 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
 
           <div className="space-y-2">
             <div className="flex gap-2">
-              <input type="text" placeholder="Nuevo código de barras secundario..." className="bg-[#0a0a0d] border border-zinc-800 rounded-xl px-3 py-1.5 text-white font-mono text-xs flex-1" />
-              <button className="px-3 py-1.5 bg-[#00ff41] text-black font-bold rounded-xl text-xs">Agregar</button>
+              <input
+                type="text"
+                value={alternateCodeDraft}
+                onChange={event => setAlternateCodeDraft(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    handleAddAlternateCode();
+                  }
+                }}
+                placeholder="Nuevo codigo de barras secundario..."
+                className="bg-[#0a0a0d] border border-zinc-800 rounded-xl px-3 py-1.5 text-white font-mono text-xs flex-1"
+              />
+              <button type="button" onClick={handleAddAlternateCode} className="px-3 py-1.5 bg-[#00ff41] text-black font-bold rounded-xl text-xs">Agregar</button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(formData.barcodeAliases || []).map(code => (
+                <span key={code} className="inline-flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-[10px] text-zinc-200">
+                  {code}
+                  <button type="button" onClick={() => handleRemoveAlternateCode(code)} className="text-red-400 hover:text-red-300" aria-label={`Eliminar codigo alterno ${code}`}>
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
             </div>
           </div>
         </div>

@@ -1579,8 +1579,15 @@ export default function PosMarketApp() {
         setSearchResults(data);
         setSelectedIndex(0);
 
-        // If exact barcode match and it's the only result, add immediately
-        if (data.length === 1 && data[0].code === val) {
+        // Add immediately when the scan matches any identifier of one product.
+        const normalizedScan = val.trim().toUpperCase();
+        const scannedProductCodes = data.length === 1 ? [
+          data[0].code,
+          data[0].barcode,
+          data[0].altCode,
+          ...(Array.isArray(data[0].barcodeAliases) ? data[0].barcodeAliases : [])
+        ].map((code: unknown) => String(code ?? '').trim().toUpperCase()).filter(Boolean) : [];
+        if (data.length === 1 && scannedProductCodes.includes(normalizedScan)) {
           addToCart(data[0]);
           setIsSearchModalOpen(false);
         } else if (data.length > 0 && fromModal) {
@@ -2853,16 +2860,17 @@ export default function PosMarketApp() {
             salesHistory,
             products: allProducts,
             categories,
-            onSaveProduct: (newP) => {
-              setAllProducts(prev => {
-                const idx = prev.findIndex(p => p.id === newP.id);
-                if (idx >= 0) {
-                  const copy = [...prev];
-                  copy[idx] = newP;
-                  return copy;
-                }
-                return [...prev, newP];
+            onSaveProduct: async (newP) => {
+              const response = await fetch('/api/products', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newP)
               });
+              const data = await response.json();
+              if (!response.ok) {
+                throw new Error(data.error || 'No se pudo guardar el producto.');
+              }
+              if (Array.isArray(data.products)) setAllProducts(data.products);
             },
             onDeleteProduct: (id) => setAllProducts(prev => prev.filter(p => p.id !== id)),
             onRefreshSales: fetchInitialData,
