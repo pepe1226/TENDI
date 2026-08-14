@@ -1,6 +1,7 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
+import { promises as fs } from "fs";
 
 async function startServer() {
   const app = express();
@@ -89,6 +90,73 @@ async function startServer() {
   let suppliers: any[] = [];
   let purchases: any[] = [];
 
+  type LocalState = {
+    products: any[];
+    cajaOperativa: number;
+    cajaCentral: number;
+    dineroInicial: number | null;
+    movements: any[];
+    credits: any[];
+    customers: any[];
+    sales: any[];
+    suppliers: any[];
+    purchases: any[];
+  };
+
+  const dataDirectory = path.join(process.cwd(), "data");
+  const dataFile = path.join(dataDirectory, "tendi.local.json");
+
+  const getLocalState = (): LocalState => ({
+    products,
+    cajaOperativa,
+    cajaCentral,
+    dineroInicial,
+    movements,
+    credits,
+    customers,
+    sales,
+    suppliers,
+    purchases,
+  });
+
+  const persistLocalState = async () => {
+    await fs.mkdir(dataDirectory, { recursive: true });
+    const temporaryFile = `${dataFile}.tmp`;
+    await fs.writeFile(temporaryFile, JSON.stringify(getLocalState(), null, 2), "utf8");
+    await fs.rename(temporaryFile, dataFile);
+  };
+
+  const loadLocalState = async () => {
+    await fs.mkdir(dataDirectory, { recursive: true });
+
+    try {
+      const stored = JSON.parse(await fs.readFile(dataFile, "utf8")) as Partial<LocalState>;
+      if (Array.isArray(stored.products)) products = stored.products;
+      if (typeof stored.cajaOperativa === "number") cajaOperativa = stored.cajaOperativa;
+      if (typeof stored.cajaCentral === "number") cajaCentral = stored.cajaCentral;
+      if (typeof stored.dineroInicial === "number" || stored.dineroInicial === null) {
+        dineroInicial = stored.dineroInicial;
+      }
+      if (Array.isArray(stored.movements)) movements = stored.movements;
+      if (Array.isArray(stored.credits)) credits = stored.credits;
+      if (Array.isArray(stored.customers)) customers = stored.customers;
+      if (Array.isArray(stored.sales)) sales = stored.sales;
+      if (Array.isArray(stored.suppliers)) suppliers = stored.suppliers;
+      if (Array.isArray(stored.purchases)) purchases = stored.purchases;
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") {
+        console.warn("No se pudo leer la persistencia local. Se usarán datos iniciales.", error);
+      }
+      await persistLocalState();
+    }
+  };
+
+  await loadLocalState();
+
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", persistence: "local-file", dataFile: "data/tendi.local.json" });
+  });
+
   type IdentityLookupCacheEntry = { expiresAt: number; payload: any };
   const identityLookupCache = new Map<string, IdentityLookupCacheEntry>();
   const IDENTITY_FOUND_TTL_MS = 30 * 60 * 1000;
@@ -117,7 +185,7 @@ async function startServer() {
   });
 
   // Save or Update Product
-  app.post("/api/products", (req, res) => {
+  app.post("/api/products", async (req, res) => {
     const prod = req.body;
     if (!prod || !prod.name) {
       return res.status(400).json({ error: "Datos de producto inválidos" });
@@ -128,18 +196,20 @@ async function startServer() {
     } else {
       products.push(prod);
     }
+    await persistLocalState();
     res.json({ success: true, products });
   });
 
   // Delete product
-  app.delete("/api/products/:id", (req, res) => {
+  app.delete("/api/products/:id", async (req, res) => {
     const { id } = req.params;
     products = products.filter(p => String(p.id) !== String(id));
+    await persistLocalState();
     res.json({ success: true, products });
   });
 
   // Process Sale
-  app.post("/api/sales", (req, res) => {
+  app.post("/api/sales", async (req, res) => {
     const { items, total, customer, paymentMethod, destinationCaja, sriPaymentForm, paymentLines, transferVoucherImage } = req.body;
     
     if (!items || items.length === 0) {
@@ -212,6 +282,7 @@ async function startServer() {
       });
     }
 
+    await persistLocalState();
     res.json({ success: true, cajaOperativa, sale });
   });
 
@@ -224,7 +295,7 @@ async function startServer() {
     res.json({ cajaOperativa, cajaCentral, dineroInicial, movements });
   });
 
-  app.post("/api/cash/initial", (req, res) => {
+  app.post("/api/cash/initial", async (req, res) => {
     const { amount } = req.body;
     dineroInicial = amount;
     cajaOperativa = amount;
@@ -234,10 +305,11 @@ async function startServer() {
       reason: 'Fondo de caja inicial',
       timestamp: new Date().toISOString()
     }];
+    await persistLocalState();
     res.json({ success: true, cajaOperativa, dineroInicial });
   });
 
-  app.post("/api/cash/transfer", (req, res) => {
+  app.post("/api/cash/transfer", async (req, res) => {
     const { amount } = req.body;
     if (amount > cajaOperativa) {
       return res.status(400).json({ error: "Fondos insuficientes en caja operativa" });
@@ -253,11 +325,12 @@ async function startServer() {
       timestamp: new Date()
     });
 
+    await persistLocalState();
     res.json({ success: true, cajaOperativa, cajaCentral });
   });
 
   // Cash movements (Entries/Exits)
-  app.post("/api/cash/movement", (req, res) => {
+  app.post("/api/cash/movement", async (req, res) => {
     const { type, amount, reason } = req.body;
     if (type === 'in') {
       cajaOperativa += amount;
@@ -272,10 +345,11 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
     
+    await persistLocalState();
     res.json({ success: true, cajaOperativa, cajaCentral });
   });
 
-  app.post("/api/cash/corte", (req, res) => {
+  app.post("/api/cash/corte", async (req, res) => {
     const { amountToTransfer } = req.body;
     
     if (amountToTransfer > cajaOperativa) {
@@ -292,11 +366,12 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
 
+    await persistLocalState();
     res.json({ success: true, cajaOperativa, cajaCentral });
   });
 
   // Credit Management (Fiar)
-  app.post("/api/credits", (req, res) => {
+  app.post("/api/credits", async (req, res) => {
     const { items, total, customer, transferVoucherImage } = req.body;
     
     if (!items || items.length === 0) {
@@ -322,6 +397,7 @@ async function startServer() {
       status: 'pending'
     });
     
+    await persistLocalState();
     res.json({ success: true });
   });
 
@@ -437,7 +513,7 @@ async function startServer() {
     res.json(customers);
   });
 
-  app.post("/api/customers", (req, res) => {
+  app.post("/api/customers", async (req, res) => {
     const customer = req.body;
     if (!customer || !customer.name) {
       return res.status(400).json({ error: "Datos de cliente no válidos." });
@@ -457,6 +533,7 @@ async function startServer() {
       customers.unshift({ ...customer, name: custNameUpper });
     }
 
+    await persistLocalState();
     res.json({ success: true, customers });
   });
 
@@ -465,7 +542,7 @@ async function startServer() {
     res.json(suppliers);
   });
 
-  app.post("/api/suppliers", (req, res) => {
+  app.post("/api/suppliers", async (req, res) => {
     const supplier = req.body;
     if (!supplier || !supplier.name || !supplier.ruc) {
       return res.status(400).json({ error: "Nombre y RUC del proveedor son obligatorios." });
@@ -479,6 +556,7 @@ async function startServer() {
     } else {
       suppliers.unshift({ id: Date.now(), ...supplier, name: supUpper, ruc: supRuc });
     }
+    await persistLocalState();
     res.json({ success: true, suppliers });
   });
 
@@ -487,7 +565,7 @@ async function startServer() {
     res.json(purchases);
   });
 
-  app.post("/api/purchases", (req, res) => {
+  app.post("/api/purchases", async (req, res) => {
     const { supplier, docType, documentNumber, authorizationNumber, items, total, subtotal15, subtotal0, vatAmount, paymentMethod, notes } = req.body;
 
     if (!items || items.length === 0) {
@@ -562,6 +640,7 @@ async function startServer() {
       });
     }
 
+    await persistLocalState();
     res.json({ success: true, purchase: newPurchase, cajaOperativa });
   });
 
