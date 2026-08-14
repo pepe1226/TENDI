@@ -7,6 +7,7 @@ interface LoginScreenProps {
   companies: Company[];
   onSelectCompanyAndLogin: (company: Company, user: SystemUser) => void;
   onCreateInitialAdmin?: (user: SystemUser & { password: string }) => Promise<void>;
+  onCreateInventorySession?: (company: Company, user: SystemUser, password: string) => Promise<void>;
   users?: SystemUser[];
 }
 
@@ -34,6 +35,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   companies,
   onSelectCompanyAndLogin,
   onCreateInitialAdmin,
+  onCreateInventorySession,
   users = []
 }) => {
   const activeCompanies = useMemo(() => companies.filter(company => company.active !== false), [companies]);
@@ -57,6 +59,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [bootstrapPin, setBootstrapPin] = useState('');
   const [bootstrapCompanyId, setBootstrapCompanyId] = useState(activeCompanies[0]?.id || '');
   const [isCreatingAdmin, setIsCreatingAdmin] = useState(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
 
   const handleBootstrap = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -149,13 +152,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     return company.name.toLowerCase().includes(query) || company.tradeName.toLowerCase().includes(query) || company.ruc.includes(query);
   });
 
-  const handleSelectCompany = (company: Company) => {
+  const handleSelectCompany = async (company: Company) => {
     if (!loginUser || !loginUser.companyIds?.includes(company.id)) {
       setErrorMsg('El usuario no tiene acceso a esta empresa.');
       setStep('login');
       return;
     }
-    onSelectCompanyAndLogin(company, loginUser);
+    setIsCreatingSession(true);
+    setErrorMsg('');
+    try {
+      await onCreateInventorySession?.(company, loginUser, password);
+      onSelectCompanyAndLogin(company, loginUser);
+    } catch (error: any) {
+      setErrorMsg(error?.message || 'No se pudo abrir la sesión operativa.');
+    } finally {
+      setIsCreatingSession(false);
+    }
   };
 
   return (
@@ -228,7 +240,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             <div className="relative"><Search className="absolute left-3.5 top-3 text-zinc-500" size={16} /><input value={companySearch} onChange={e => setCompanySearch(e.target.value)} placeholder="Buscar por RUC o razón social" className="w-full bg-[#0a0a0e] border border-zinc-700 rounded pl-10 pr-4 py-2.5 text-xs outline-none focus:border-amber-500" /></div>
             <div className="space-y-3 max-h-80 overflow-y-auto">
               {filteredCompanies.map(company => (
-                <button key={company.id} type="button" onClick={() => handleSelectCompany(company)} className="w-full bg-[#0a0a0e] hover:bg-[#181824] border border-zinc-800 hover:border-amber-500/50 p-4 rounded flex items-center justify-between text-left">
+                <button key={company.id} type="button" disabled={isCreatingSession} onClick={() => handleSelectCompany(company)} className="w-full bg-[#0a0a0e] hover:bg-[#181824] disabled:opacity-50 border border-zinc-800 hover:border-amber-500/50 p-4 rounded flex items-center justify-between text-left">
                   <span className="flex items-center gap-3"><Building2 size={23} className="text-amber-400" /><span><strong className="block text-white">{company.tradeName || company.name}</strong><span className="text-[11px] text-zinc-500">RUC: {company.ruc}</span></span></span><LogIn size={17} className="text-amber-400" />
                 </button>
               ))}

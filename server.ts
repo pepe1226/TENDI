@@ -2,6 +2,7 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { promises as fs } from "fs";
+import { InventoryDatabase, type InventoryContext, type InventoryPermission } from "./server/inventoryDatabase";
 
 async function startServer() {
   const app = express();
@@ -152,6 +153,7 @@ async function startServer() {
   };
 
   await loadLocalState();
+  const inventoryDatabase = await InventoryDatabase.open(dataDirectory);
 
   const normalizeProductCode = (value: unknown) => String(value ?? '').trim().toUpperCase();
   const getProductCodes = (product: any) => [
@@ -205,6 +207,221 @@ async function startServer() {
   };
 
   // --- API ROUTES ---
+
+  const inventoryTokenFromRequest = (req: express.Request) => {
+    const authorization = req.header('authorization') || '';
+    return authorization.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length).trim()
+      : req.header('x-tendi-inventory-session') || '';
+  };
+
+  const requireInventoryContext = (req: express.Request, permission?: InventoryPermission): InventoryContext => {
+    const context = inventoryDatabase.resolveSession(
+      inventoryTokenFromRequest(req),
+      req.header('x-tendi-company-id') || undefined,
+      req.header('x-tendi-warehouse-id') || undefined
+    );
+    if (permission) inventoryDatabase.assertPermission(context, permission);
+    return context;
+  };
+
+  const inventoryErrorStatus = (error: any) => {
+    const message = String(error?.message || error);
+    const normalizedMessage = message.toLowerCase();
+    if (normalizedMessage.includes('sesión') || normalizedMessage.includes('permiso') || normalizedMessage.includes('acceso')) return 403;
+    if (normalizedMessage.includes('idempotencia') || normalizedMessage.includes('repite') || normalizedMessage.includes('unique')) return 409;
+    return 400;
+  };
+
+  app.post('/api/inventory/auth/bootstrap', async (req, res) => {
+    try {
+      const { user, company, warehouse } = req.body || {};
+      if (!user?.id || !user?.username || !user?.passwordHash || !user?.passwordSalt || !company?.id) {
+        return res.status(400).json({ error: 'Datos iniciales de autenticación incompletos.' });
+      }
+      const session = await inventoryDatabase.provisionInitialAdmin({
+        id: String(user.id),
+        username: String(user.username),
+        fullName: String(user.fullName || user.username),
+        role: String(user.role || 'ADMINISTRADOR'),
+        passwordHash: String(user.passwordHash),
+        passwordSalt: String(user.passwordSalt),
+        permissions: Array.isArray(user.inventoryPermissions) ? user.inventoryPermissions : undefined,
+        company: { id: String(company.id), name: String(company.name || company.tradeName || company.id) },
+        warehouse: warehouse?.id ? { id: String(warehouse.id), code: String(warehouse.code || '001'), name: String(warehouse.name || 'Bodega principal') } : undefined
+      });
+      res.status(201).json({ success: true, session });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo configurar la autenticación del servidor.' });
+    }
+  });
+
+  app.post('/api/inventory/auth/login', async (req, res) => {
+    try {
+      const { username, password, companyId, warehouseId } = req.body || {};
+      const session = await inventoryDatabase.authenticate(String(username || ''), String(password || ''), companyId, warehouseId);
+      res.json({ success: true, session });
+    } catch (error: any) {
+      res.status(401).json({ error: error?.message || 'No se pudo iniciar sesión.' });
+    }
+  });
+
+  app.get('/api/inventory/context', (req, res) => {
+    try {
+      const context = requireInventoryContext(req);
+      res.json({ success: true, context });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'Contexto no autorizado.' });
+    }
+  });
+
+  app.get('/api/inventory/products', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.products.view');
+      res.json(inventoryDatabase.listProducts(context.companyId, String(req.query.q || '')));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo consultar el catálogo.' });
+    }
+  });
+
+  app.post('/api/inventory/products', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.products.edit');
+      const result = inventoryDatabase.upsertProduct(context.companyId, req.body);
+      res.status(201).json({ success: true, product: result });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo guardar el producto.' });
+    }
+  });
+
+  app.get('/api/inventory/warehouses', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.warehouses.view');
+      res.json(inventoryDatabase.listWarehouses(context.companyId));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudieron consultar las bodegas.' });
+    }
+  });
+
+  app.post('/api/inventory/warehouses', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.warehouses.manage');
+      res.status(201).json({ success: true, warehouse: inventoryDatabase.createWarehouse(context, req.body) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo guardar la bodega.' });
+    }
+  });
+
+  app.post('/api/inventory/documents', (req, res) => {
+    try {
+      const { type } = req.body || {};
+      const permission = type === 'ENTRADA' ? 'inventory.receipts.create'
+        : type === 'EGRESO' ? 'inventory.issues.create'
+          : type === 'TRANSFERENCIA' ? 'inventory.transfers.create'
+            : type === 'CONTEO' ? 'inventory.counts.create'
+              : 'inventory.adjustments.create';
+      const context = requireInventoryContext(req, permission);
+      const document = inventoryDatabase.createDraft(context, req.body);
+      res.status(201).json({ success: true, document });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo crear el documento.' });
+    }
+  });
+
+  app.post('/api/inventory/documents/:id/post', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.documents.post');
+      res.json({ success: true, document: inventoryDatabase.postDocument(context, req.params.id) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo contabilizar el documento.' });
+    }
+  });
+
+  app.post('/api/inventory/documents/:id/reverse', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.documents.reverse');
+      const idempotencyKey = String(req.body?.idempotencyKey || '');
+      res.json({ success: true, document: inventoryDatabase.reverseDocument(context, req.params.id, idempotencyKey) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo reversar el documento.' });
+    }
+  });
+
+  app.get('/api/inventory/documents', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.products.view');
+      res.json(inventoryDatabase.listDocuments(context, {
+        status: req.query.status ? String(req.query.status) : undefined,
+        type: req.query.type ? String(req.query.type) : undefined,
+        productId: req.query.productId ? String(req.query.productId) : undefined
+      }));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudieron consultar los documentos.' });
+    }
+  });
+
+  app.get('/api/inventory/documents/:id', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.products.view');
+      res.json(inventoryDatabase.getDocument(context, req.params.id));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo consultar el documento.' });
+    }
+  });
+
+  app.get('/api/inventory/kardex/:productId', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.products.view');
+      res.json(inventoryDatabase.getKardex(context, req.params.productId));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo consultar el Kardex.' });
+    }
+  });
+
+  app.get('/api/inventory/balances', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.products.view');
+      res.json(inventoryDatabase.getBalances(context));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudieron consultar los saldos.' });
+    }
+  });
+
+  app.get('/api/inventory/replenishment', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.replenishment.view');
+      res.json(inventoryDatabase.listReplenishment(context));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo consultar la reposición.' });
+    }
+  });
+
+  app.post('/api/inventory/replenishment', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.replenishment.view');
+      res.json({ success: true, rule: inventoryDatabase.saveReplenishmentRule(context, req.body) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo guardar la reposición.' });
+    }
+  });
+
+  app.get('/api/inventory/reconciliation', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.audit.view');
+      res.json(inventoryDatabase.reconcile(context, req.query.productId ? String(req.query.productId) : undefined));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo realizar la conciliación.' });
+    }
+  });
+
+  app.get('/api/inventory/audit', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.audit.view');
+      res.json(inventoryDatabase.listAudit(context));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo consultar la auditoría.' });
+    }
+  });
 
   // Search products
   app.get("/api/products", (req, res) => {

@@ -44,7 +44,7 @@ import { GestionEmpresas } from './GestionEmpresas';
 import { GestionUsuarios } from './GestionUsuarios';
 import { GestionMatrizPermisos } from './GestionMatrizPermisos';
 import { GestionAprobacionesAudit } from './GestionAprobacionesAudit';
-import { GestionKardexStock } from './GestionKardexStock';
+import { GestionInventario } from './GestionInventario';
 import { GestionEstablecimientos } from '../../untitled';
 
 interface AdminModulesProps {
@@ -55,6 +55,7 @@ interface AdminModulesProps {
   companies: Company[];
   users: SystemUser[];
   currentUser?: SystemUser;
+  inventorySession?: string;
   canAccessAction?: (actionId: string) => boolean;
   onSaveUser: (user: SystemUser) => void;
   onDeleteUser: (id: string) => void;
@@ -77,6 +78,7 @@ export const AdminModules: React.FC<AdminModulesProps> = ({
   companies,
   users,
   currentUser,
+  inventorySession = '',
   canAccessAction = (_actionId: string) => true,
   onSaveUser,
   onDeleteUser,
@@ -319,7 +321,7 @@ export const AdminModules: React.FC<AdminModulesProps> = ({
       {/* ---------------- KARDEX STOCK TAB ---------------- */}
       {activeTab === 'kardex_stock' && (
         <div className="space-y-6">
-          <GestionKardexStock key="inventory-kardex-main" />
+          <GestionInventario key="inventory-kardex-main" companyId={company.id} sessionToken={inventorySession} activeSubAction={activeSubAction || 'kardex'} />
         </div>
       )}
 
@@ -707,54 +709,8 @@ export const AdminModules: React.FC<AdminModulesProps> = ({
                 </table>
               </div>
             </div>
-          ) : activeSubAction === 'kardex' ? (
-                            <GestionKardexStock key="inventory-kardex-detail" />
-          ) : activeSubAction === 'stock_minimo' ? (
-            <div className="space-y-6">
-              <div className="bg-[#121217] p-5 rounded-2xl border border-zinc-800">
-                <h2 className="text-xl font-display font-black text-white flex items-center gap-2">
-                  <AlertTriangle className="text-amber-400" />
-                  <span>ALERTAS DE STOCK MÍNIMO</span>
-                </h2>
-                <p className="text-zinc-400 text-xs mt-1">
-                  Productos que han alcanzado su umbral de reposición y requieren orden de compra
-                </p>
-              </div>
-
-              <div className="bg-[#121217] border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
-                <table className="w-full text-left text-xs text-zinc-300">
-                  <thead className="bg-[#181820] text-zinc-400 uppercase font-mono text-[10px] tracking-wider border-b border-zinc-800">
-                    <tr>
-                      <th className="p-3.5">Código</th>
-                      <th className="p-3.5">Producto</th>
-                      <th className="p-3.5 text-center">Stock Actual</th>
-                      <th className="p-3.5 text-center">Stock Mínimo</th>
-                      <th className="p-3.5 text-center">Sugerido Comprar</th>
-                      <th className="p-3.5 text-right">Acción</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-800/60">
-                    {products.filter(p => (p.stock || 0) <= 5).map(prod => (
-                      <tr key={prod.id} className="hover:bg-zinc-800/40">
-                        <td className="p-3.5 font-mono text-zinc-400">{prod.code}</td>
-                        <td className="p-3.5 font-bold text-white">{prod.name}</td>
-                        <td className="p-3.5 text-center font-mono font-bold text-red-400 text-sm">{prod.stock || 0}</td>
-                        <td className="p-3.5 text-center font-mono text-zinc-400">5 u.</td>
-                        <td className="p-3.5 text-center font-mono font-bold text-emerald-400">+20 u.</td>
-                        <td className="p-3.5 text-right">
-                          <button 
-                            onClick={() => alert(`Generando Orden de Compra para ${prod.name}`)}
-                            className="px-2.5 py-1 bg-[#00ff41] hover:bg-[#00e038] text-black font-bold text-[10px] rounded-lg"
-                          >
-                            Crear Orden Compra
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+          ) : ['entradas', 'salidas', 'kardex', 'ajuste_fisico', 'stock_minimo'].includes(activeSubAction || '') ? (
+            <GestionInventario key="inventory-operational-main" companyId={company.id} sessionToken={inventorySession} activeSubAction={activeSubAction} />
           ) : (
             <GestionProductos key="inventory-products-main"
               products={products} 

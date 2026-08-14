@@ -144,6 +144,50 @@ export default function PosMarketApp() {
       return [];
     }
   });
+  const [inventorySession, setInventorySession] = useState<string>(() => sessionStorage.getItem('tendi_inventory_session') || '');
+
+  useEffect(() => {
+    if (inventorySession) sessionStorage.setItem('tendi_inventory_session', inventorySession);
+    else sessionStorage.removeItem('tendi_inventory_session');
+  }, [inventorySession]);
+
+  const createInventorySession = async (company: Company, user: SystemUser, password: string) => {
+    const loginResponse = await fetch('/api/inventory/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user.username, password, companyId: company.id })
+    });
+
+    if (loginResponse.ok) {
+      const loginData = await loginResponse.json();
+      setInventorySession(loginData.session.token);
+      return;
+    }
+
+    if (!user.passwordHash || !user.passwordSalt) {
+      throw new Error('El usuario aún no está provisionado en la sesión segura del servidor.');
+    }
+
+    const bootstrapResponse = await fetch('/api/inventory/auth/bootstrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user: {
+          id: user.id,
+          username: user.username,
+          fullName: user.fullName,
+          role: user.role,
+          passwordHash: user.passwordHash,
+          passwordSalt: user.passwordSalt
+        },
+        company: { id: company.id, name: company.tradeName || company.name },
+        warehouse: { id: `${company.id}-MAIN`, code: '001', name: 'Bodega principal' }
+      })
+    });
+    const bootstrapData = await bootstrapResponse.json().catch(() => ({}));
+    if (!bootstrapResponse.ok) throw new Error(bootstrapData.error || 'No se pudo provisionar la sesión segura del servidor.');
+    setInventorySession(bootstrapData.session.token);
+  };
 
   useEffect(() => {
     localStorage.setItem('tendi_system_users', JSON.stringify(knownUsers));
@@ -2755,7 +2799,10 @@ export default function PosMarketApp() {
         onCreateInitialAdmin={async (user) => {
           const securedUser = await secureSystemUser(user);
           setKnownUsers(previous => [...previous, securedUser]);
+          const company = companies.find(item => item.id === user.companyIds?.[0]);
+          if (company) await createInventorySession(company, securedUser, user.password);
         }}
+        onCreateInventorySession={createInventorySession}
         onSelectCompanyAndLogin={(company, user) => {
           setActiveCompany(company);
           setCurrentUser(user.username);
@@ -2789,6 +2836,7 @@ export default function PosMarketApp() {
             onLogout: () => {
               setCurrentUser('SIN CONFIGURAR');
               setCurrentUserPin('');
+              setInventorySession('');
               setMainViewMode('login');
             },
           }}
@@ -2800,6 +2848,7 @@ export default function PosMarketApp() {
             companies,
             users: knownUsers,
             currentUser: knownUsers.find(user => user.username === currentUser),
+            inventorySession,
             canAccessAction: canCurrentUserAccessAction,
             onSaveUser: async (user) => {
               const previousUser = knownUsers.find(item => item.id === user.id);
