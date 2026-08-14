@@ -1,0 +1,22 @@
+import React from 'react';
+import { AdminModules } from './AdminModules';
+import { Navbar } from './Navbar';
+import { PosPinModal } from './PosPinModal';
+
+interface AdminWorkspaceProps {
+  navbarProps: Record<string, unknown>;
+  adminModulesProps: Record<string, unknown>;
+  pinModalProps: React.ComponentProps<typeof PosPinModal>;
+}
+
+export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({
+  navbarProps,
+  adminModulesProps,
+  pinModalProps,
+}) => (
+  <div className="h-screen bg-[#09090b] text-white font-sans flex flex-col overflow-hidden">
+    <Navbar {...(navbarProps as any)} />
+    <AdminModules {...(adminModulesProps as any)} />
+    <PosPinModal {...pinModalProps} />
+  </div>
+);
