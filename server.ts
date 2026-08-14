@@ -171,6 +171,25 @@ async function startServer() {
     )) || null;
   };
 
+  const findProductByReference = (item: any) => {
+    const referenceId = item?.id ?? item?.productId;
+    const itemCodes = getProductCodes(item);
+
+    return products.find(product => (
+      (referenceId !== undefined && String(product.id) === String(referenceId)) ||
+      itemCodes.some(code => getProductCodes(product).includes(code))
+    ));
+  };
+
+  const getPositiveQuantity = (item: any) => Number(item?.quantity ?? 1);
+
+  const validateQuantities = (items: any[]) => {
+    return items.find(item => {
+      const quantity = getPositiveQuantity(item);
+      return !Number.isFinite(quantity) || quantity <= 0;
+    });
+  };
+
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok", persistence: "local-file", dataFile: "data/tendi.local.json" });
   });
@@ -264,6 +283,16 @@ async function startServer() {
       return res.status(400).json({ error: "No se puede procesar una venta con total menor o igual a $0.00" });
     }
 
+    const invalidQuantity = validateQuantities(items);
+    if (invalidQuantity) {
+      return res.status(400).json({ error: "Todas las cantidades de la venta deben ser mayores a cero." });
+    }
+
+    const normalizedItems = items.map((item: any) => ({
+      ...item,
+      quantity: getPositiveQuantity(item)
+    }));
+
     if (paymentMethod === 'CREDITO') {
       const custUpper = (customer || '').toUpperCase();
       if (!customer || custUpper.includes('CONSUMIDOR FINAL') || custUpper.includes('9999999999999')) {
@@ -278,23 +307,37 @@ async function startServer() {
       }
     }
 
-    // Validate stock
-    for (const item of items) {
-      const p = products.find(prod => prod.id === item.id);
-      if (!p || p.stock < 1) {
-        return res.status(400).json({ error: `Sin stock: ${item.name}` });
+    // Validate the total quantity per product before changing any stock.
+    const requestedByProduct = new Map<string, { product: any; quantity: number; name: string }>();
+    for (const item of normalizedItems) {
+      const product = findProductByReference(item);
+      if (!product) {
+        return res.status(400).json({ error: `Producto no encontrado: ${item.name || item.code || item.barcode || 'sin referencia'}` });
+      }
+
+      const key = String(product.id);
+      const current = requestedByProduct.get(key);
+      requestedByProduct.set(key, {
+        product,
+        quantity: (current?.quantity || 0) + item.quantity,
+        name: product.name || item.name
+      });
+    }
+
+    for (const { product, quantity, name } of requestedByProduct.values()) {
+      if (Number(product.stock || 0) < quantity) {
+        return res.status(400).json({ error: `Stock insuficiente: ${name}. Disponible: ${product.stock || 0}, solicitado: ${quantity}.` });
       }
     }
 
     // Deduct stock
-    items.forEach((item: any) => {
-      const p = products.find(prod => prod.id === item.id);
-      if (p) p.stock -= item.quantity || 1;
-    });
+    for (const { product, quantity } of requestedByProduct.values()) {
+      product.stock -= quantity;
+    }
 
     const sale = {
       id: Date.now(),
-      items,
+      items: normalizedItems,
       total,
       customer,
       paymentMethod,
@@ -426,15 +469,51 @@ async function startServer() {
       return res.status(400).json({ error: "No se puede registrar un crédito con total menor o igual a $0.00." });
     }
 
+    const invalidQuantity = validateQuantities(items);
+    if (invalidQuantity) {
+      return res.status(400).json({ error: "Todas las cantidades del crédito deben ser mayores a cero." });
+    }
+
+    const normalizedItems = items.map((item: any) => ({
+      ...item,
+      quantity: getPositiveQuantity(item)
+    }));
+
     const custUpper = (customer || '').toUpperCase();
     if (!customer || custUpper.includes('CONSUMIDOR FINAL') || custUpper.includes('9999999999999')) {
       return res.status(400).json({ error: "No se permite otorgar crédito a CONSUMIDOR FINAL. Seleccione un cliente identificado." });
     }
 
+    const requestedByProduct = new Map<string, { product: any; quantity: number; name: string }>();
+    for (const item of normalizedItems) {
+      const product = findProductByReference(item);
+      if (!product) {
+        return res.status(400).json({ error: `Producto no encontrado: ${item.name || item.code || item.barcode || 'sin referencia'}` });
+      }
+
+      const key = String(product.id);
+      const current = requestedByProduct.get(key);
+      requestedByProduct.set(key, {
+        product,
+        quantity: (current?.quantity || 0) + item.quantity,
+        name: product.name || item.name
+      });
+    }
+
+    for (const { product, quantity, name } of requestedByProduct.values()) {
+      if (Number(product.stock || 0) < quantity) {
+        return res.status(400).json({ error: `Stock insuficiente: ${name}. Disponible: ${product.stock || 0}, solicitado: ${quantity}.` });
+      }
+    }
+
+    for (const { product, quantity } of requestedByProduct.values()) {
+      product.stock -= quantity;
+    }
+
     credits.push({
       id: Date.now(),
       customer,
-      items,
+      items: normalizedItems,
       total,
       transferVoucherImage: transferVoucherImage || null,
       timestamp: new Date().toISOString(),
@@ -624,12 +703,30 @@ async function startServer() {
       return res.status(400).json({ error: "El total del comprobante de compra debe ser mayor a $0.00" });
     }
 
-    const productWithoutBarcode = items.find((item: any) => item.createIfMissing && !normalizeProductCode(item.barcode));
+    const invalidQuantity = validateQuantities(items);
+    if (invalidQuantity) {
+      return res.status(400).json({ error: "Todas las cantidades de la compra deben ser mayores a cero." });
+    }
+
+    const normalizedItems = items.map((item: any) => ({
+      ...item,
+      quantity: getPositiveQuantity(item),
+      code: normalizeProductCode(item.code || item.barcode),
+      barcode: normalizeProductCode(item.barcode),
+      altCode: normalizeProductCode(item.altCode),
+      barcodeAliases: Array.from(new Set(
+        (Array.isArray(item.barcodeAliases) ? item.barcodeAliases : [])
+          .map(normalizeProductCode)
+          .filter(Boolean)
+      ))
+    }));
+
+    const productWithoutBarcode = normalizedItems.find((item: any) => item.createIfMissing && !normalizeProductCode(item.barcode));
     if (productWithoutBarcode) {
       return res.status(400).json({ error: "Todo producto nuevo debe ingresar primero por un cÃ³digo de barras escaneado." });
     }
 
-    const incomingNewProducts = items
+    const incomingNewProducts = normalizedItems
       .filter((item: any) => item.createIfMissing)
       .map((item: any) => ({
         id: `incoming-${item.barcode}`,
@@ -639,6 +736,18 @@ async function startServer() {
         barcodeAliases: Array.isArray(item.barcodeAliases) ? item.barcodeAliases : [],
         name: item.name
       }));
+    const seenIncomingCodes = new Set<string>();
+    let duplicateIncomingCode = '';
+    for (const incomingProduct of incomingNewProducts) {
+      for (const code of getProductCodes(incomingProduct)) {
+        if (seenIncomingCodes.has(code)) duplicateIncomingCode = code;
+        seenIncomingCodes.add(code);
+      }
+    }
+    if (duplicateIncomingCode) {
+      return res.status(409).json({ error: `El codigo ${duplicateIncomingCode} se repite dentro del comprobante de compra.` });
+    }
+
     const purchaseConflict = incomingNewProducts
       .map(findProductCodeConflict)
       .find(Boolean);
@@ -647,10 +756,10 @@ async function startServer() {
     }
 
     // Process Stock Entry (Increase Stock) & Update Costs
-    items.forEach((item: any) => {
-      let p = products.find(prod => prod.id === item.productId || prod.code === item.code);
+    normalizedItems.forEach((item: any) => {
+      const p = findProductByReference(item);
       if (p) {
-        p.stock += (item.quantity || 1);
+        p.stock = Number(p.stock || 0) + item.quantity;
         if (item.costPrice && item.costPrice > 0) {
           p.costPrice = item.costPrice;
         }
@@ -660,11 +769,12 @@ async function startServer() {
           id: Date.now() + Math.floor(Math.random() * 1000),
           code: normalizeProductCode(item.code || item.barcode),
           barcode: normalizeProductCode(item.barcode),
-          barcodeAliases: [],
+          altCode: normalizeProductCode(item.altCode),
+          barcodeAliases: item.barcodeAliases,
           name: item.name.toUpperCase(),
           price: item.salePrice || (item.costPrice * 1.3) || 1.00,
           costPrice: item.costPrice || 0,
-          stock: item.quantity || 1,
+          stock: item.quantity,
           category: 'food',
           image: 'https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=400&q=80'
         };
@@ -679,7 +789,7 @@ async function startServer() {
       docType: docType || 'FACTURA_PROVEEDOR', // 'FACTURA_PROVEEDOR' or 'LIQUIDACION_COMPRA_SRI_03'
       documentNumber: documentNumber || `001-001-${Math.floor(Math.random() * 899999 + 100000)}`,
       authorizationNumber: authorizationNumber || `AUT-${Date.now()}`,
-      items,
+      items: normalizedItems,
       subtotal15: subtotal15 || 0,
       subtotal0: subtotal0 || 0,
       vatAmount: vatAmount || 0,
