@@ -65,7 +65,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     const errors: string[] = [];
     if (!bootstrapName.trim()) errors.push('Ingrese los nombres completos.');
     if (!normalizedUsername) errors.push('Ingrese un nombre de usuario.');
-    if (bootstrapPassword.length < 8) errors.push('La contraseña debe tener al menos 8 caracteres.');
+    if (!bootstrapPassword) errors.push('Ingrese una contraseña.');
     if (bootstrapPassword !== bootstrapPasswordConfirm) errors.push('Las contraseñas no coinciden.');
     if (!/^\d{4}$/.test(bootstrapPin)) errors.push('El PIN debe tener exactamente 4 dígitos.');
     if (!selectedCompany) errors.push('Seleccione una empresa activa.');
