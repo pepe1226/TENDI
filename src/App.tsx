@@ -1440,9 +1440,13 @@ export default function PosMarketApp() {
           setIsWaitlistModalOpen(true);
         } else if (e.key === 'Escape') {
           e.preventDefault();
-          setSearch('');
-          setSearchResults([]);
-          setSelectedCartIndex(-1);
+          if (cart.length > 0 && !search && searchResults.length === 0) {
+            handleClearCart();
+          } else {
+            setSearch('');
+            setSearchResults([]);
+            setSelectedCartIndex(-1);
+          }
         }
 
         // Search/Cart Navigation
@@ -2583,6 +2587,8 @@ export default function PosMarketApp() {
   };
 
   const handleClearCart = () => {
+    if (cart.length === 0) return;
+    if (!confirm('El carrito contiene productos. ¿Deseas vaciarlo?')) return;
     updateActiveCart([]);
     setCustomer('CONSUMIDOR FINAL 9999999999999');
     setSearch('');
