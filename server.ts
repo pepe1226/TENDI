@@ -294,6 +294,121 @@ async function startServer() {
     }
   });
 
+  app.get('/api/inventory/catalog/products', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.products.view');
+      res.json(inventoryDatabase.listCatalogProducts(context, {
+        query: req.query.q ? String(req.query.q) : undefined,
+        lineId: req.query.lineId ? String(req.query.lineId) : undefined,
+        categoryId: req.query.categoryId ? String(req.query.categoryId) : undefined,
+        subcategoryId: req.query.subcategoryId ? String(req.query.subcategoryId) : undefined,
+        subgroupId: req.query.subgroupId ? String(req.query.subgroupId) : undefined,
+        brand: req.query.brand ? String(req.query.brand) : undefined,
+        supplierId: req.query.primarySupplierId ? String(req.query.primarySupplierId) : undefined,
+        anySupplierId: req.query.anySupplierId ? String(req.query.anySupplierId) : undefined,
+        lastSupplierId: req.query.lastSupplierId ? String(req.query.lastSupplierId) : undefined,
+        withoutSupplier: req.query.withoutSupplier === 'true',
+        active: req.query.active === undefined ? undefined : req.query.active === 'true'
+      }));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo consultar el catálogo.' });
+    }
+  });
+
+  app.get('/api/inventory/classifications', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.classification.view');
+      res.json(inventoryDatabase.listClassifications(context));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudieron consultar las clasificaciones.' });
+    }
+  });
+
+  app.post('/api/inventory/classifications', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.classification.edit');
+      const level = String(req.body?.level || '').toUpperCase() as any;
+      res.status(201).json({ classification: inventoryDatabase.upsertClassification(context, level, req.body || {}) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo guardar la clasificación.' });
+    }
+  });
+
+  app.post('/api/inventory/classifications/:level/:id/deactivate', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.classification.deactivate');
+      const level = String(req.params.level || '').toUpperCase() as any;
+      res.json({ classification: inventoryDatabase.deactivateClassification(context, level, req.params.id) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo desactivar la clasificación.' });
+    }
+  });
+
+  app.post('/api/inventory/classifications/:level/:id/merge', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.classification.merge');
+      const level = String(req.params.level || '').toUpperCase() as any;
+      res.json({ classification: inventoryDatabase.mergeClassification(context, level, req.params.id, String(req.body?.targetId || '')) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo fusionar la clasificación.' });
+    }
+  });
+
+  app.post('/api/inventory/classifications/reassign', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.classification.reassign');
+      res.json({ products: inventoryDatabase.reassignProductsClassification(context, req.body || {}) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudieron reasignar los productos.' });
+    }
+  });
+
+  app.get('/api/inventory/suppliers', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.suppliers.view');
+      res.json(inventoryDatabase.listSuppliers(context));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudieron consultar los proveedores.' });
+    }
+  });
+
+  app.post('/api/inventory/suppliers', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.suppliers.manage');
+      res.status(201).json({ supplier: inventoryDatabase.upsertSupplier(context, req.body || {}) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo guardar el proveedor.' });
+    }
+  });
+
+  app.get('/api/inventory/products/:productId/suppliers', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.suppliers.view');
+      res.json(inventoryDatabase.listProductSuppliers(context, req.params.productId));
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudieron consultar los proveedores del producto.' });
+    }
+  });
+
+  app.post('/api/inventory/products/:productId/suppliers', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, req.body?.isPrimary ? 'inventory.suppliers.primary' : 'inventory.suppliers.manage');
+      res.status(201).json({ relations: inventoryDatabase.upsertProductSupplier(context, req.params.productId, req.body || {}) });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo asociar el proveedor.' });
+    }
+  });
+
+  app.delete('/api/inventory/products/:productId/suppliers/:supplierId', (req, res) => {
+    try {
+      const context = requireInventoryContext(req, 'inventory.suppliers.manage');
+      const relations = inventoryDatabase.upsertProductSupplier(context, req.params.productId, { supplierId: req.params.supplierId, isPrimary: false, status: 'INACTIVO' });
+      res.json({ relations });
+    } catch (error: any) {
+      res.status(inventoryErrorStatus(error)).json({ error: error?.message || 'No se pudo retirar el proveedor.' });
+    }
+  });
+
   app.get('/api/inventory/warehouses', (req, res) => {
     try {
       const context = requireInventoryContext(req, 'inventory.warehouses.view');

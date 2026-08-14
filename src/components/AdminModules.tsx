@@ -45,6 +45,7 @@ import { GestionUsuarios } from './GestionUsuarios';
 import { GestionMatrizPermisos } from './GestionMatrizPermisos';
 import { GestionAprobacionesAudit } from './GestionAprobacionesAudit';
 import { GestionInventario } from './GestionInventario';
+import { GestionClasificacionProductos } from './GestionClasificacionProductos';
 import { GestionEstablecimientos } from '../../untitled';
 
 interface AdminModulesProps {
@@ -646,69 +647,8 @@ export const AdminModules: React.FC<AdminModulesProps> = ({
       {/* ----------------2. INVENTARIO ---------------- */}
       {activeTab === 'inventario' && (
         <div className="space-y-6">
-          {activeSubAction === 'categorias' ? (
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-[#121217] p-5 rounded-2xl border border-zinc-800">
-                <div>
-                  <h2 className="text-xl font-display font-black text-white flex items-center gap-2">
-                    <Package className="text-[#00ff41]" />
-                    <span>CATEGORÍAS DE PRODUCTO</span>
-                  </h2>
-                  <p className="text-zinc-400 text-xs mt-1">
-                    Agrupación comercial y familias de productos para reportes e inventario
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => {
-                    const name = prompt("Nombre de la nueva categoría:");
-                    if (name) {
-                      setCategoriesList([...categoriesList, { id: String(Date.now()), code: 'CAT-0' + (categoriesList.length + 1), name: name.toUpperCase(), itemsCount: 0, status: 'ACTIVO' }]);
-                    }
-                  }}
-                  className="flex items-center gap-2 bg-[#00ff41] hover:bg-[#00e038] text-black font-display font-black px-4 py-2.5 rounded-xl text-xs transition-all shadow-[0_0_15px_rgba(0,255,65,0.2)]"
-                >
-                  <Plus size={16} />
-                  <span>NUEVA CATEGORÍA</span>
-                </button>
-              </div>
-
-              <div className="bg-[#121217] border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
-                <table className="w-full text-left text-xs text-zinc-300">
-                  <thead className="bg-[#181820] text-zinc-400 uppercase font-mono text-[10px] tracking-wider border-b border-zinc-800">
-                    <tr>
-                      <th className="p-3.5">Código</th>
-                      <th className="p-3.5">Categoría</th>
-                      <th className="p-3.5 text-center">Productos Asociados</th>
-                      <th className="p-3.5 text-center">Estado</th>
-                      <th className="p-3.5 text-right">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-800/60">
-                    {categoriesList.map(cat => (
-                      <tr key={cat.id} className="hover:bg-zinc-800/40">
-                        <td className="p-3.5 font-mono font-bold text-[#00ff41]">{cat.code}</td>
-                        <td className="p-3.5 font-bold text-white">{cat.name}</td>
-                        <td className="p-3.5 text-center font-mono font-bold text-white">{cat.itemsCount} ítems</td>
-                        <td className="p-3.5 text-center">
-                          <span className="bg-emerald-950/60 text-emerald-400 border border-emerald-800 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                            {cat.status}
-                          </span>
-                        </td>
-                        <td className="p-3.5 text-right">
-                          <button 
-                            onClick={() => alert(`Editar categoría ${cat.name}`)}
-                            className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg"
-                          >
-                            <Edit3 size={14} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+          {activeSubAction === 'categorias' || activeSubAction === 'lineas' ? (
+            <GestionClasificacionProductos key="inventory-classification-main" companyId={company.id} sessionToken={inventorySession} initialLevel={activeSubAction === 'lineas' ? 'LINEA' : 'CATEGORIA'} />
           ) : ['entradas', 'salidas', 'kardex', 'ajuste_fisico', 'stock_minimo'].includes(activeSubAction || '') ? (
             <GestionInventario key="inventory-operational-main" companyId={company.id} sessionToken={inventorySession} activeSubAction={activeSubAction} />
           ) : (
