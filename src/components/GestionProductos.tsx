@@ -623,7 +623,7 @@ export const GestionProductos: React.FC<GestionProductosProps> = ({
                         setFormData(previous => ({
                           ...previous,
                           barcode,
-                          code: isNewProduct && !previous.code ? barcode : previous.code
+                          code: isNewProduct && (!previous.code || previous.code === previous.barcode) ? barcode : previous.code
                         }));
                       }}
                       className="w-full bg-[#0a0a0d] border border-zinc-800 rounded-xl px-3 py-1.5 text-[#00ff41] font-mono font-bold text-xs focus:border-[#00ff41] outline-none disabled:opacity-75"
